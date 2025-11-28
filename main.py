@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/urlshortener')
+MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb+srv://krityamrajput_db_user:4xvVDBBRMkS99XRG@cluster0.ikeow1.mongodb.net/?appName=Cluster0')
 BOT_OWNER = os.environ.get('BOT_OWNER', '@YourUsername')
 BOT_DEV = os.environ.get('BOT_DEV', '@DeveloperUsername')
 
