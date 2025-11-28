@@ -1,3 +1,5 @@
-python-telegram-bot==21.10
+pyTelegramBotAPI==4.19.1
 pyshorteners==1.0.1
+requests==2.31.0
 validators==0.22.0
+pymongo==4.5.0
