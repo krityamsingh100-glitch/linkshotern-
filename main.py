@@ -29,14 +29,14 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb+srv://krityamrajput_db_user:4xvVDBBRMkS99XRG@cluster0.ikeow1.mongodb.net/?appName=Cluster0')
+MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/urlshortener')
 BOT_OWNER = os.environ.get('BOT_OWNER', '@YourUsername')
 BOT_DEV = os.environ.get('BOT_DEV', '@DeveloperUsername')
 
 # Initialize the bot
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# FIXED: Proper MongoDB connection with error handling
+# MongoDB connection with error handling
 def init_mongodb():
     """Initialize MongoDB connection with proper error handling"""
     try:
@@ -102,7 +102,7 @@ class GuaranteedShortener:
                     self.services_used += 1
                     self.service_stats[service['name']] = self.service_stats.get(service['name'], 0) + 1
                     
-                    # Store in MongoDB - FIXED: Proper MongoDB check
+                    # Store in MongoDB
                     url_data = {
                         'user_id': user_id,
                         'original_url': url,
@@ -114,7 +114,7 @@ class GuaranteedShortener:
                         'user_name': user_name
                     }
                     
-                    # FIXED: Proper MongoDB insertion with error handling
+                    # MongoDB insertion with error handling
                     if MONGODB_CONNECTED and urls_collection is not None:
                         try:
                             result = urls_collection.insert_one(url_data)
@@ -213,7 +213,7 @@ class GuaranteedShortener:
                 'user_name': user_name
             }
             
-            # FIXED: Proper MongoDB insertion with error handling
+            # MongoDB insertion with error handling
             if MONGODB_CONNECTED and urls_collection is not None:
                 try:
                     result = urls_collection.insert_one(url_data)
@@ -246,13 +246,12 @@ class GuaranteedShortener:
             
             return url_data
 
-# Create shortener instance - GUARANTEED TO WORK
+# Create shortener instance
 guaranteed_shortener = GuaranteedShortener()
 
 class DatabaseManager:
     @staticmethod
     def get_user_stats(user_id: int):
-        # FIXED: Proper MongoDB collection check
         if not MONGODB_CONNECTED or urls_collection is None:
             return {'total_urls': 0, 'total_clicks': 0, 'urls': []}
         
@@ -271,7 +270,6 @@ class DatabaseManager:
 
     @staticmethod
     def get_user_urls(user_id: int, limit: int = 10):
-        # FIXED: Proper MongoDB collection check
         if not MONGODB_CONNECTED or urls_collection is None:
             return []
         
@@ -287,14 +285,12 @@ class BackupManager:
     @staticmethod
     def create_backup(user_id: int):
         try:
-            # FIXED: Proper MongoDB collection check
             if not MONGODB_CONNECTED or urls_collection is None:
                 return None
                 
             user_urls = list(urls_collection.find({'user_id': user_id}))
             url_ids = [url['_id'] for url in user_urls]
             
-            # FIXED: Proper clicks collection check
             user_clicks = []
             if clicks_collection is not None:
                 user_clicks = list(clicks_collection.find({'url_id': {'$in': url_ids}}))
@@ -325,7 +321,6 @@ class BackupManager:
     @staticmethod
     def restore_backup(user_id: int, zip_data: bytes):
         try:
-            # FIXED: Proper MongoDB collection check
             if not MONGODB_CONNECTED or urls_collection is None:
                 return False
                 
@@ -337,14 +332,12 @@ class BackupManager:
                             backup_data = json.loads(f.read().decode('utf-8'))
                         
                         for url_data in backup_data.get('urls', []):
-                            # Handle ObjectId conversion
                             if '_id' in url_data and '$oid' in url_data['_id']:
                                 url_data['_id'] = ObjectId(url_data['_id']['$oid'])
                             
                             url_data['user_id'] = user_id
                             url_data['restored_at'] = datetime.utcnow()
                             
-                            # Use update with upsert to handle existing URLs
                             urls_collection.update_one(
                                 {
                                     'short_url': url_data['short_url'], 
@@ -413,54 +406,48 @@ def create_help_keyboard():
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Handle /start command with FIXED video handling"""
+    """Handle /start command - Clean version without intro"""
     try:
         user_name = message.from_user.first_name
         user_id = message.from_user.id
         
-        # FIXED: Using clickable video link instead of send_video
-        video_url = "https://files.catbox.moe/nunx43.mp4"
-        
         welcome_text = f"""
-🎬 *Welcome {user_name}!* 
+👋 *Welcome {user_name}!* 
 
 🤖 **PROFESSIONAL URL SHORTENER BOT**
 
-📹 *Watch our introduction video:*
-👉 [Click here to watch the introduction video]({video_url})
+🚀 *Advanced URL Shortening Features:*
+✅ Multiple service fallback system
+✅ Click tracking & analytics
+✅ Data backup & restore
+✅ 100% uptime guarantee
 
-🚀 *Now with GUARANTEED URL Shortening!*
-✅ Always works - multiple fallback systems
-✅ Fast and reliable service  
-✅ Professional analytics & tracking
-✅ MongoDB Database: {'✅ CONNECTED' if MONGODB_CONNECTED else '❌ OFFLINE (Using Fallback)'}
+💡 *Quick Start:*
+Just send me any URL and I'll shorten it instantly!
 
-✨ *What I can do for you:*
-• Shorten long URLs instantly (ALWAYS WORKS)
-• Track clicks and analytics  
-• Backup & restore your data
-• Multiple service redundancy
+🔧 *System Status:*
+• Database: {'✅ CONNECTED' if MONGODB_CONNECTED else '⚠️ OFFLINE (Using Fallback)'}
+• Services: ✅ READY
+• Storage: ✅ ACTIVE
 
-👇 *Use the buttons below to navigate:*
+👇 *Use the buttons below to explore features:*
         """
         
-        # Send message with video link
         bot.send_message(
             message.chat.id,
             welcome_text,
             parse_mode='Markdown',
             reply_markup=create_main_keyboard(),
-            disable_web_page_preview=False
+            disable_web_page_preview=True
         )
         
         logger.info(f"New user started: {user_name} (ID: {user_id})")
         
     except Exception as e:
         logger.error(f"Error in send_welcome: {e}")
-        # Ultimate fallback welcome message
         bot.send_message(
             message.chat.id,
-            f"👋 Welcome {message.from_user.first_name}!\n\n🚀 *Professional URL Shortener Bot*\n\n✅ **GUARANTEED TO WORK** - Multiple fallback systems\n\nUse the buttons below to get started:",
+            f"👋 Welcome {message.from_user.first_name}!\n\n🚀 *URL Shortener Bot*\n\nSend me any URL to get started!",
             parse_mode='Markdown',
             reply_markup=create_main_keyboard()
         )
@@ -485,8 +472,6 @@ def show_help_section(chat_id):
 
 *How to Shorten URLs:*
 Simply send any long URL starting with http:// or https://
-
-✅ **GUARANTEED SERVICE** - Always works with fallback systems
 
 👇 *Select a category for detailed help:*
     """
@@ -547,7 +532,7 @@ For business inquiries or support, please contact the owner directly.
 *Technical Stack:*
 • Python 3.11+
 • MongoDB Database
-• Guaranteed URL Shortening
+• Multiple URL Shortening APIs
 • Advanced Analytics System
 
 For technical issues or development inquiries.
@@ -649,86 +634,6 @@ Use `/stats` for detailed analytics
             )
             bot.answer_callback_query(call.id, "💾 Backup Guide")
             
-        elif call.data == "help_stats":
-            stats_help = """
-📊 **STATISTICS GUIDE**
-
-*Available Commands:*
-• `/stats` - Overview of your shortening activity
-• `/mystats` - List of your URLs with click counts
-
-*What You'll See:*
-✅ Total URLs shortened
-✅ Total clicks received
-✅ Service usage distribution
-✅ Individual URL performance
-
-*Tracking Features:*
-• Real-time click counting
-• Service reliability metrics
-• User-specific analytics
-            """
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=stats_help,
-                parse_mode='Markdown',
-                reply_markup=create_help_keyboard()
-            )
-            bot.answer_callback_query(call.id, "📊 Stats Help")
-            
-        elif call.data == "help_backup":
-            backup_help = """
-💾 **BACKUP GUIDE**
-
-*Why Backup?*
-• Protect your data
-• Transfer between devices
-• Recover from accidents
-
-*Backup Process:*
-1. Use `/backup` command
-2. Wait for ZIP file generation
-3. Download and save the file
-
-*Restore Process:*
-1. Use `/upload` command
-2. Reply with your backup file
-3. Confirm restoration
-            """
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=backup_help,
-                parse_mode='Markdown',
-                reply_markup=create_help_keyboard()
-            )
-            bot.answer_callback_query(call.id, "💾 Backup Help")
-            
-        elif call.data == "help_shorten":
-            shorten_help = """
-🔗 **SHORTENING GUIDE**
-
-*Supported Services:*
-• TinyURL Direct - Most reliable
-• is.gd Simple - Fast & clean
-• Custom Hash - Guaranteed fallback
-
-*GUARANTEED FEATURES:*
-🔄 Multiple fallback systems
-📊 Click tracking
-⚡ Fast processing
-🎯 100% uptime
-            """
-            bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=shorten_help,
-                parse_mode='Markdown',
-                reply_markup=create_help_keyboard()
-            )
-            bot.answer_callback_query(call.id, "🔗 Shortening Help")
-            
     except Exception as e:
         logger.error(f"Callback error: {e}")
         bot.answer_callback_query(call.id, "❌ Error processing request")
@@ -741,7 +646,6 @@ def show_stats(message):
     try:
         stats = db_manager.get_user_stats(user_id)
         
-        # FIXED: Proper MongoDB collection check
         service_stats = []
         if MONGODB_CONNECTED and urls_collection is not None:
             try:
@@ -898,7 +802,7 @@ def handle_document(message):
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
-    """Handle all URL shortening requests - GUARANTEED TO WORK"""
+    """Handle all URL shortening requests"""
     user_message = message.text.strip()
 
     if user_message.startswith('/'):
@@ -920,7 +824,7 @@ def handle_all_messages(message):
         
         user_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
         
-        # This will ALWAYS work due to guaranteed fallbacks
+        # URL shortening with guaranteed fallbacks
         url_data = guaranteed_shortener.shorten_url(user_message, message.from_user.id, user_name)
 
         original_display = user_message[:80] + ('...' if len(user_message) > 80 else '')
@@ -944,14 +848,12 @@ def handle_all_messages(message):
 • /mystats - View your URLs
 • /stats - See analytics
 • /backup - Download data
-
-🎉 *Thank you for using our guaranteed service!*
         """
         
         bot.reply_to(message, result_text, parse_mode='Markdown')
 
     except Exception as e:
-        logger.error(f"CRITICAL: All shortening methods failed: {e}")
+        logger.error(f"Shortening failed: {e}")
         critical_text = f"""
 ❌ **TEMPORARY ISSUE**
 
@@ -967,23 +869,15 @@ Thank you for your patience.
 # Start the bot
 if __name__ == '__main__':
     print(f"""
-🚀 GUARANTEED URL SHORTENER BOT STARTING...
+🚀 PROFESSIONAL URL SHORTENER BOT STARTING...
     
-🎯 FEATURES:
-✅ 100% UPTIME GUARANTEE - FIXED ALL ISSUES
-✅ Multiple fallback systems
-✅ Professional UI with video link
-✅ MongoDB: {'✅ CONNECTED' if MONGODB_CONNECTED else '❌ OFFLINE (Using Fallback)'}
-✅ URL Services: ✅ READY
-✅ Inline keyboard navigation
-
-🔧 STATUS:
+🔧 SYSTEM STATUS:
 • Bot Token: {'✅ SET' if BOT_TOKEN else '❌ MISSING'}
 • MongoDB: {'✅ CONNECTED' if MONGODB_CONNECTED else '❌ OFFLINE'}
-• Video Intro: ✅ READY (Clickable Link)
 • Shortening Services: ✅ READY
+• Backup System: ✅ READY
 
-✅ BOT IS READY - GUARANTEED TO WORK!
+✅ BOT IS READY AND OPERATIONAL!
     """)
     
     try:
