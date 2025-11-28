@@ -1,6 +1,7 @@
 import os
 import telebot
 import pyshorteners
+import requests
 import validators
 import logging
 import random
@@ -27,7 +28,7 @@ db = client.url_shortener
 urls_collection = db.urls
 clicks_collection = db.clicks
 
-class URLShortener:
+class UnlimitedShortener:
     def __init__(self):
         self.services_used = 0
         self.failed_services = set()
@@ -42,6 +43,7 @@ class URLShortener:
             self._clckru
         ]
 
+        # Shuffle services to distribute load
         random.shuffle(services)
 
         for service in services:
@@ -85,10 +87,12 @@ class URLShortener:
             'created_at': datetime.utcnow(),
             'last_clicked': None
         }
-        urls_collection.insert_one(url_data)
+        result = urls_collection.insert_one(url_data)
+        url_data['_id'] = result.inserted_id
         return url_data
 
     def _cleanuri(self, url: str) -> str:
+        """CleanURI API - Free, no rate limits mentioned"""
         response = requests.post(
             'https://cleanuri.com/api/v1/shorten',
             data={'url': url},
@@ -99,10 +103,12 @@ class URLShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _tinyurl(self, url: str) -> str:
+        """TinyURL - Most reliable free service"""
         shortener = pyshorteners.Shortener()
         return shortener.tinyurl.short(url)
 
     def _isgd(self, url: str) -> str:
+        """is.gd - Free, no registration needed"""
         response = requests.get(
             f'https://is.gd/create.php',
             params={'format': 'simple', 'url': url},
@@ -113,6 +119,7 @@ class URLShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _dagd(self, url: str) -> str:
+        """da.gd - Free URL shortener"""
         response = requests.get(
             f'https://da.gd/s',
             params={'url': url},
@@ -123,6 +130,7 @@ class URLShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _clckru(self, url: str) -> str:
+        """clck.ru - Russian shortener, works globally"""
         response = requests.get(
             f'https://clck.ru/--',
             params={'url': url},
@@ -133,7 +141,7 @@ class URLShortener:
         raise Exception(f"HTTP {response.status_code}")
 
 # Create shortener instance
-url_shortener = URLShortener()
+unlimited_shortener = UnlimitedShortener()
 
 class BackupManager:
     @staticmethod
@@ -218,18 +226,23 @@ def send_welcome(message):
 🔗 *UNLIMITED URL Shortener Bot* 🔗
 
 I can shorten URLs using MULTIPLE free services!
+No rate limits - I'll automatically switch between services.
 Now with MongoDB integration for click tracking and backup features.
 
 *Commands:*
 /start - Show this message
 /help - Get help
-/stats - Show your URL statistics
+/stats - Show usage statistics
 /mystats - Show your shortened URLs with click counts
 /backup - Download your data backup
 /upload - Upload and restore backup (reply to a backup file)
 
 *How to use:*
 Just send me any URL starting with http:// or https://
+
+*Example URLs to test:*
+`https://www.google.com/search?q=python+programming+tutorial`
+`https://www.youtube.com/watch?v=very_long_video_id_here`
 
 *New Features:*
 📊 Click tracking for your shortened URLs
@@ -240,26 +253,24 @@ Just send me any URL starting with http:// or https://
 
 @bot.message_handler(commands=['stats'])
 def show_stats(message):
-    """Show user statistics"""
+    """Show usage statistics"""
     user_id = message.from_user.id
     
     # Get user's URL count and total clicks
     user_urls = list(urls_collection.find({'user_id': user_id}))
     total_clicks = sum(url.get('click_count', 0) for url in user_urls)
-    most_popular = max(user_urls, key=lambda x: x.get('click_count', 0)) if user_urls else None
     
     stats_text = f"""
-📊 *Your Statistics*
+📊 *Bot Statistics*
 
-🔗 Total URLs shortened: `{len(user_urls)}`
-👆 Total clicks: `{total_clicks}`
-📈 Average clicks per URL: `{total_clicks/len(user_urls) if user_urls else 0:.1f}`
+✅ Services used successfully: `{unlimited_shortener.services_used}`
+❌ Failed services: `{len(unlimited_shortener.failed_services)}`
 
+🔗 Your URLs shortened: `{len(user_urls)}`
+👆 Your total clicks: `{total_clicks}`
+
+💡 I'm using multiple free APIs to provide unlimited shortening!
 """
-    if most_popular:
-        stats_text += f"🔥 Most popular URL: `{most_popular['click_count']} clicks`\n"
-        stats_text += f"🔗 {most_popular['short_url']}\n"
-
     bot.reply_to(message, stats_text, parse_mode='Markdown')
 
 @bot.message_handler(commands=['mystats'])
@@ -359,16 +370,17 @@ def handle_all_messages(message):
     if not validators.url(user_message):
         bot.reply_to(
             message,
-            "❌ *Invalid URL format!*\n\nPlease send a valid URL starting with http:// or https://",
+            "❌ *Invalid URL format!*\n\nPlease send a valid URL starting with http:// or https://\n\n*Example:* `https://www.google.com`",
             parse_mode='Markdown'
         )
         return
 
     try:
+        # Show typing action
         bot.send_chat_action(message.chat.id, 'typing')
 
-        # Shorten the URL and store in MongoDB
-        url_data = url_shortener.shorten_with_all_services(user_message, message.from_user.id)
+        # Shorten the URL using our unlimited service and store in MongoDB
+        url_data = unlimited_shortener.shorten_with_all_services(user_message, message.from_user.id)
 
         # Send the result
         result_text = f"""
@@ -382,13 +394,17 @@ def handle_all_messages(message):
 
 📊 *Click Tracking:* Enabled
 👆 Clicks: `0` (new)
+🔧 Service: `{url_data['service_used']}`
 
 💡 *Commands:*
 /mystats - View your URLs and clicks
 /backup - Download your data
-/stats - View statistics
+/stats - View usage statistics
 """
         bot.reply_to(message, result_text, parse_mode='Markdown')
+
+        # Log the activity
+        logger.info(f"User {message.from_user.first_name} shortened URL using service #{unlimited_shortener.services_used}")
 
     except Exception as e:
         error_text = f"""
@@ -397,39 +413,53 @@ def handle_all_messages(message):
 Please try again in a few minutes.
 
 *Error details:* `{str(e)}`
+
+💡 You can also try:
+- Using a different URL
+- Waiting a moment and trying again
 """
         bot.reply_to(message, error_text, parse_mode='Markdown')
         logger.error(f"All services failed: {str(e)}")
 
-# Click tracking simulation (you would need a web server for real tracking)
-def simulate_click(short_url: str):
-    """Simulate a click on shortened URL"""
-    url_data = urls_collection.find_one({'short_url': short_url})
-    if url_data:
-        # Update click count
-        urls_collection.update_one(
-            {'_id': url_data['_id']},
-            {
-                '$inc': {'click_count': 1},
-                '$set': {'last_clicked': datetime.utcnow()}
+# Click tracking function (for webhook implementation)
+def track_click(short_url: str, user_agent: str = "Unknown"):
+    """Track a click on shortened URL"""
+    try:
+        url_data = urls_collection.find_one({'short_url': short_url})
+        if url_data:
+            # Update click count in URLs collection
+            urls_collection.update_one(
+                {'_id': url_data['_id']},
+                {
+                    '$inc': {'click_count': 1},
+                    '$set': {'last_clicked': datetime.utcnow()}
+                }
+            )
+            
+            # Log detailed click information
+            click_data = {
+                'url_id': str(url_data['_id']),
+                'short_url': short_url,
+                'user_id': url_data['user_id'],
+                'user_agent': user_agent,
+                'clicked_at': datetime.utcnow(),
+                'ip_address': 'unknown'  # Would be set in webhook implementation
             }
-        )
-        
-        # Log click details
-        click_data = {
-            'url_id': str(url_data['_id']),
-            'short_url': short_url,
-            'clicked_at': datetime.utcnow(),
-            'user_agent': 'simulated'
-        }
-        clicks_collection.insert_one(click_data)
+            clicks_collection.insert_one(click_data)
+            
+            return url_data['original_url']
+    except Exception as e:
+        logger.error(f"Click tracking failed: {e}")
+    return None
 
 # Start the bot
 if __name__ == '__main__':
-    print("🚀 Enhanced URL Shortener Bot with MongoDB is starting...")
+    print("🚀 UNLIMITED URL Shortener Bot with MongoDB is starting...")
     print("📊 Features: Click tracking, Backup/Restore, Statistics")
+    print("🔗 Using multiple free APIs for unlimited shortening")
     print("💾 MongoDB connected:", MONGODB_URI)
-    
+    print("⏹️  Press Ctrl+C to stop the bot")
+
     try:
         bot.polling()
     except Exception as e:
