@@ -13,6 +13,11 @@ from datetime import datetime
 from pymongo import MongoClient
 from bson import ObjectId
 from bson.json_util import dumps, loads
+from telebot.types import (
+    InlineKeyboardMarkup, 
+    InlineKeyboardButton,
+    InputMediaVideo
+)
 
 # Set up logging
 logging.basicConfig(
@@ -24,6 +29,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 MONGODB_URI = os.environ.get('MONGODB_URI', 'mongodb://localhost:27017/urlshortener')
+BOT_OWNER = os.environ.get('BOT_OWNER', '@YourUsername')
+BOT_DEV = os.environ.get('BOT_DEV', '@DeveloperUsername')
 
 # Initialize the bot and MongoDB
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -35,7 +42,6 @@ try:
     logger.info("✅ MongoDB connected successfully")
 except Exception as e:
     logger.error(f"❌ MongoDB connection failed: {e}")
-    # Fallback to in-memory storage if MongoDB fails
     urls_collection = None
     clicks_collection = None
 
@@ -45,7 +51,7 @@ class ProfessionalShortener:
         self.failed_services = set()
         self.service_stats = {}
 
-    def shorten_with_all_services(self, url: str, user_id: int) -> dict:
+    def shorten_with_all_services(self, url: str, user_id: int, user_name: str = "User") -> dict:
         """Try multiple free URL shortening services and store in MongoDB"""
         services = [
             {'name': 'cleanuri', 'function': self._cleanuri},
@@ -65,7 +71,6 @@ class ProfessionalShortener:
                 short_url = service['function'](url)
                 if short_url:
                     self.services_used += 1
-                    # Update service stats
                     self.service_stats[service['name']] = self.service_stats.get(service['name'], 0) + 1
                     
                     # Store in MongoDB
@@ -77,7 +82,7 @@ class ProfessionalShortener:
                         'click_count': 0,
                         'created_at': datetime.utcnow(),
                         'last_clicked': None,
-                        'user_name': f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
+                        'user_name': user_name
                     }
                     
                     if urls_collection:
@@ -102,7 +107,7 @@ class ProfessionalShortener:
                 'click_count': 0,
                 'created_at': datetime.utcnow(),
                 'last_clicked': None,
-                'user_name': f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
+                'user_name': user_name
             }
             if urls_collection:
                 result = urls_collection.insert_one(url_data)
@@ -112,7 +117,6 @@ class ProfessionalShortener:
             raise Exception(f"All services failed: {str(e)}")
 
     def _cleanuri(self, url: str) -> str:
-        """CleanURI API - Free, no rate limits mentioned"""
         response = requests.post(
             'https://cleanuri.com/api/v1/shorten',
             data={'url': url},
@@ -123,12 +127,10 @@ class ProfessionalShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _tinyurl(self, url: str) -> str:
-        """TinyURL - Most reliable free service"""
         shortener = pyshorteners.Shortener()
         return shortener.tinyurl.short(url)
 
     def _isgd(self, url: str) -> str:
-        """is.gd - Free, no registration needed"""
         response = requests.get(
             'https://is.gd/create.php',
             params={'format': 'simple', 'url': url},
@@ -139,7 +141,6 @@ class ProfessionalShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _dagd(self, url: str) -> str:
-        """da.gd - Free URL shortener"""
         response = requests.get(
             'https://da.gd/s',
             params={'url': url},
@@ -150,7 +151,6 @@ class ProfessionalShortener:
         raise Exception(f"HTTP {response.status_code}")
 
     def _clckru(self, url: str) -> str:
-        """clck.ru - Russian shortener, works globally"""
         response = requests.get(
             'https://clck.ru/--',
             params={'url': url},
@@ -166,7 +166,6 @@ professional_shortener = ProfessionalShortener()
 class DatabaseManager:
     @staticmethod
     def get_user_stats(user_id: int):
-        """Get user statistics from MongoDB"""
         if not urls_collection:
             return {'total_urls': 0, 'total_clicks': 0, 'urls': []}
         
@@ -181,7 +180,6 @@ class DatabaseManager:
 
     @staticmethod
     def get_user_urls(user_id: int, limit: int = 10):
-        """Get user's URLs with pagination"""
         if not urls_collection:
             return []
         
@@ -192,15 +190,11 @@ class DatabaseManager:
 class BackupManager:
     @staticmethod
     def create_backup(user_id: int):
-        """Create backup of user's URLs and click data"""
         try:
             if not urls_collection:
                 return None
                 
-            # Get user's URLs
             user_urls = list(urls_collection.find({'user_id': user_id}))
-            
-            # Get click data for user's URLs
             url_ids = [url['_id'] for url in user_urls]
             user_clicks = list(clicks_collection.find({'url_id': {'$in': url_ids}})) if clicks_collection else []
             
@@ -213,10 +207,8 @@ class BackupManager:
                 'clicks': json.loads(dumps(user_clicks))
             }
             
-            # Create ZIP in memory
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                # Convert to JSON string and add to zip
                 json_data = json.dumps(backup_data, indent=2, ensure_ascii=False)
                 zip_file.writestr(
                     f'url_backup_{user_id}_{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}.json', 
@@ -231,30 +223,24 @@ class BackupManager:
 
     @staticmethod
     def restore_backup(user_id: int, zip_data: bytes):
-        """Restore backup data"""
         try:
             if not urls_collection:
                 return False
                 
             zip_buffer = io.BytesIO(zip_data)
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
-                # Get the first JSON file in zip
                 for file_name in zip_file.namelist():
                     if file_name.endswith('.json'):
                         with zip_file.open(file_name) as f:
                             backup_data = json.loads(f.read().decode('utf-8'))
                         
-                        # Restore URLs
                         for url_data in backup_data.get('urls', []):
-                            # Convert string _id back to ObjectId if needed
                             if '_id' in url_data and '$oid' in url_data['_id']:
                                 url_data['_id'] = ObjectId(url_data['_id']['$oid'])
                             
-                            # Update user_id to current user
                             url_data['user_id'] = user_id
                             url_data['restored_at'] = datetime.utcnow()
                             
-                            # Use short_url and user_id as unique identifier
                             urls_collection.update_one(
                                 {'short_url': url_data['short_url'], 'user_id': user_id},
                                 {'$set': url_data},
@@ -271,37 +257,404 @@ class BackupManager:
 db_manager = DatabaseManager()
 backup_manager = BackupManager()
 
-@bot.message_handler(commands=['start', 'help'])
+def create_main_keyboard():
+    """Create main inline keyboard"""
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    
+    buttons = [
+        InlineKeyboardButton("📖 Help", callback_data="help"),
+        InlineKeyboardButton("👤 Owner", callback_data="owner"),
+        InlineKeyboardButton("💻 Developer", callback_data="developer"),
+        InlineKeyboardButton("📊 Statistics", callback_data="stats"),
+        InlineKeyboardButton("🔗 Shorten URL", callback_data="shorten_info"),
+        InlineKeyboardButton("💾 Backup", callback_data="backup_info")
+    ]
+    
+    # Add buttons in rows of 2
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            keyboard.add(buttons[i], buttons[i + 1])
+        else:
+            keyboard.add(buttons[i])
+    
+    return keyboard
+
+def create_back_keyboard():
+    """Create back to main menu keyboard"""
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("🔙 Back to Main Menu", callback_data="main_menu"))
+    return keyboard
+
+def create_help_keyboard():
+    """Create help section keyboard with back button"""
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    
+    buttons = [
+        InlineKeyboardButton("📊 Stats Guide", callback_data="help_stats"),
+        InlineKeyboardButton("💾 Backup Guide", callback_data="help_backup"),
+        InlineKeyboardButton("🔗 Shorten Guide", callback_data="help_shorten"),
+        InlineKeyboardButton("👤 Contact Owner", callback_data="owner"),
+        InlineKeyboardButton("🔙 Main Menu", callback_data="main_menu")
+    ]
+    
+    for i in range(0, len(buttons), 2):
+        if i + 1 < len(buttons):
+            keyboard.add(buttons[i], buttons[i + 1])
+        else:
+            keyboard.add(buttons[i])
+    
+    return keyboard
+
+@bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Handle /start and /help commands"""
-    welcome_text = """
-🎬 *WATCH OUR INTRODUCTION VIDEO*:
-[Click here to watch the bot introduction](https://files.catbox.moe/nunx43.mp4)
+    """Handle /start command with video intro and inline keyboard"""
+    try:
+        # Get user info for personalized greeting
+        user_name = message.from_user.first_name
+        user_id = message.from_user.id
+        
+        # Send introduction video
+        video_url = "https://files.catbox.moe/nunx43.mp4"
+        
+        welcome_text = f"""
+🎬 *Welcome {user_name}!* 
 
-🤖 *PROFESSIONAL URL SHORTENER BOT* 🚀
+🤖 **PROFESSIONAL URL SHORTENER BOT**
 
-*Premium Features Included:*
+Watch our introduction video above, then explore the features using the buttons below!
+
+✨ *What I can do for you:*
+• Shorten long URLs instantly
+• Track clicks and analytics  
+• Backup & restore your data
+• Multiple free services
+
+👇 *Use the buttons below to navigate:*
+        """
+        
+        # Send video with caption and inline keyboard
+        bot.send_video(
+            message.chat.id,
+            video_url,
+            caption=welcome_text,
+            parse_mode='Markdown',
+            reply_markup=create_main_keyboard()
+        )
+        
+        logger.info(f"New user started: {user_name} (ID: {user_id})")
+        
+    except Exception as e:
+        logger.error(f"Error in send_welcome: {e}")
+        # Fallback if video fails
+        bot.send_message(
+            message.chat.id,
+            f"👋 Welcome {message.from_user.first_name}!\n\n🚀 *Professional URL Shortener Bot*\n\nUse the buttons below to get started:",
+            parse_mode='Markdown',
+            reply_markup=create_main_keyboard()
+        )
+
+@bot.message_handler(commands=['help'])
+def show_help(message):
+    """Handle /help command"""
+    show_help_section(message.chat.id)
+
+def show_help_section(chat_id):
+    """Display help section with inline keyboard"""
+    help_text = """
+📖 **HELP & GUIDANCE**
+
+*Available Commands:*
+• `/start` - Show welcome message with video
+• `/help` - Show this help message  
+• `/stats` - View your shortening statistics
+• `/mystats` - See your shortened URLs
+• `/backup` - Download your data backup
+• `/upload` - Restore from backup file
+
+*How to Shorten URLs:*
+Simply send any long URL starting with http:// or https://
+
+👇 *Select a category for detailed help:*
+    """
+    
+    bot.send_message(
+        chat_id,
+        help_text,
+        parse_mode='Markdown',
+        reply_markup=create_help_keyboard()
+    )
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback_query(call):
+    """Handle all inline keyboard callbacks"""
+    try:
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
+        
+        if call.data == "main_menu":
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="🏠 *Main Menu*\n\nSelect an option below:",
+                parse_mode='Markdown',
+                reply_markup=create_main_keyboard()
+            )
+            
+        elif call.data == "help":
+            show_help_section(chat_id)
+            bot.answer_callback_query(call.id, "📖 Help Section")
+            
+        elif call.data == "owner":
+            owner_text = f"""
+👤 **BOT OWNER**
+
+*Contact Information:*
+• **Username:** {BOT_OWNER}
+• **Role:** Bot Owner & Administrator
+
+*Responsibilities:*
+• Bot maintenance and updates
+• User support and assistance
+• Feature development planning
+
+For business inquiries or support, please contact the owner directly.
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=owner_text,
+                parse_mode='Markdown',
+                reply_markup=create_back_keyboard()
+            )
+            bot.answer_callback_query(call.id, "👤 Owner Info")
+            
+        elif call.data == "developer":
+            dev_text = f"""
+💻 **BOT DEVELOPER**
+
+*Development Team:*
+• **Lead Developer:** {BOT_DEV}
+• **Specialization:** Telegram Bot Development
+
+*Technical Stack:*
+• Python 3.11+
+• MongoDB Database
+• Multiple URL Shortening APIs
+• Advanced Analytics System
+
+*Features Developed:*
 ✅ Multi-service URL shortening
-📊 Advanced click analytics  
-💾 Automated backup system
-🔒 Secure data management
-📈 Real-time statistics
+✅ Real-time click tracking
+✅ Backup & restore system
+✅ Professional UI/UX design
 
-*Commands Available:*
-/start - Show this welcome message
-/stats - View your shortening statistics
-/mystats - See your shortened URLs with analytics
-/backup - Download your data backup (JSON)
-/upload - Restore from backup file
+For technical issues or development inquiries.
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=dev_text,
+                parse_mode='Markdown',
+                reply_markup=create_back_keyboard()
+            )
+            bot.answer_callback_query(call.id, "💻 Developer Info")
+            
+        elif call.data == "stats":
+            # Show user statistics
+            user_id = call.from_user.id
+            stats = db_manager.get_user_stats(user_id)
+            
+            stats_text = f"""
+📊 **YOUR STATISTICS**
 
-*How to Use:*
-Simply send me any long URL and I'll shorten it instantly!
+*Summary:*
+• Total URLs: `{stats['total_urls']}`
+• Total Clicks: `{stats['total_clicks']}`
+• Avg. Clicks: `{stats['total_clicks']/max(stats['total_urls'], 1):.1f}`
+
+*Bot Performance:*
+• Successful Shortenings: `{professional_shortener.services_used}`
+• Active Services: `{len(professional_shortener.service_stats)}`
+
+*Commands:*
+Use `/mystats` to see your individual URLs
+Use `/stats` for detailed analytics
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=stats_text,
+                parse_mode='Markdown',
+                reply_markup=create_back_keyboard()
+            )
+            bot.answer_callback_query(call.id, "📊 Your Statistics")
+            
+        elif call.data == "shorten_info":
+            shorten_text = """
+🔗 **URL SHORTENING GUIDE**
+
+*How to Shorten URLs:*
+1. Simply copy any long URL
+2. Send it directly to this chat
+3. I'll shorten it instantly!
+
+*Supported URL Formats:*
+• `https://example.com/very-long-path`
+• `http://yoursite.com/document`
+• `https://www.youtube.com/watch?v=...`
+
+*Automatic Features:*
+✅ Multiple service fallback
+✅ Click tracking enabled
+✅ Analytics collection
+✅ Fast processing
+
+*Try it now!* Send any URL to get started.
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=shorten_text,
+                parse_mode='Markdown',
+                reply_markup=create_back_keyboard()
+            )
+            bot.answer_callback_query(call.id, "🔗 Shortening Guide")
+            
+        elif call.data == "backup_info":
+            backup_text = """
+💾 **BACKUP & RESTORE SYSTEM**
+
+*Backup Features:*
+• Download all your data as ZIP
+• Includes URLs and click statistics
+• Secure JSON format
+• Easy restoration process
+
+*How to Backup:*
+1. Use `/backup` command
+2. Download the generated ZIP file
+3. Store it safely
+
+*How to Restore:*
+1. Use `/upload` command
+2. Reply to your backup file
+3. Data will be restored automatically
+
+*Your data is always safe with us!*
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=backup_text,
+                parse_mode='Markdown',
+                reply_markup=create_back_keyboard()
+            )
+            bot.answer_callback_query(call.id, "💾 Backup Guide")
+            
+        elif call.data == "help_stats":
+            stats_help = """
+📊 **STATISTICS GUIDE**
+
+*Available Commands:*
+• `/stats` - Overview of your shortening activity
+• `/mystats` - List of your URLs with click counts
+
+*What You'll See:*
+✅ Total URLs shortened
+✅ Total clicks received
+✅ Service usage distribution
+✅ Individual URL performance
+
+*Tracking Features:*
+• Real-time click counting
+• Service reliability metrics
+• User-specific analytics
+• Performance insights
+
+Use these commands to monitor your URL performance!
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=stats_help,
+                parse_mode='Markdown',
+                reply_markup=create_help_keyboard()
+            )
+            bot.answer_callback_query(call.id, "📊 Stats Help")
+            
+        elif call.data == "help_backup":
+            backup_help = """
+💾 **BACKUP GUIDE**
+
+*Why Backup?*
+• Protect your data
+• Transfer between devices
+• Recover from accidents
+
+*Backup Process:*
+1. Use `/backup` command
+2. Wait for ZIP file generation
+3. Download and save the file
+
+*Restore Process:*
+1. Use `/upload` command
+2. Reply with your backup file
+3. Confirm restoration
+
+*Your backup includes:*
+• All shortened URLs
+• Click statistics
+• Service information
+• Creation dates
+
+🔒 *Your data privacy is our priority*
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=backup_help,
+                parse_mode='Markdown',
+                reply_markup=create_help_keyboard()
+            )
+            bot.answer_callback_query(call.id, "💾 Backup Help")
+            
+        elif call.data == "help_shorten":
+            shorten_help = """
+🔗 **SHORTENING GUIDE**
 
 *Supported Services:*
-• CleanURI • TinyURL • is.gd • da.gd • clck.ru
-"""
-    bot.reply_to(message, welcome_text, parse_mode='Markdown')
+• CleanURI - Fast & reliable
+• TinyURL - Most popular
+• is.gd - Simple & clean
+• da.gd - Alternative service
+• clck.ru - Russian service
 
+*Automatic Features:*
+🔄 **Service Fallback** - If one fails, I try others
+📊 **Click Tracking** - Monitor your URL performance
+⚡ **Fast Processing** - Usually under 3 seconds
+🎯 **Multiple Formats** - Supports all valid URLs
+
+*Just send any URL and watch the magic!*
+
+*Example URLs:*
+`https://www.example.com/very-long-path-here`
+`http://yoursite.com/document.pdf`
+            """
+            bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=shorten_help,
+                parse_mode='Markdown',
+                reply_markup=create_help_keyboard()
+            )
+            bot.answer_callback_query(call.id, "🔗 Shortening Help")
+            
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        bot.answer_callback_query(call.id, "❌ Error processing request")
+
+# Keep all your existing message handlers (stats, mystats, backup, upload, etc.)
 @bot.message_handler(commands=['stats'])
 def show_stats(message):
     """Show comprehensive user statistics"""
@@ -310,7 +663,6 @@ def show_stats(message):
     try:
         stats = db_manager.get_user_stats(user_id)
         
-        # Get service distribution
         if urls_collection:
             pipeline = [
                 {'$match': {'user_id': user_id}},
@@ -321,38 +673,32 @@ def show_stats(message):
             service_stats = []
         
         stats_text = f"""
-📊 *YOUR PERSONAL ANALYTICS DASHBOARD*
+📊 **DETAILED ANALYTICS**
 
-📈 *Summary Statistics:*
-• Total URLs Shortened: `{stats['total_urls']}`
-• Total Clicks Tracked: `{stats['total_clicks']}`
-• Average Clicks/URL: `{stats['total_clicks']/max(stats['total_urls'], 1):.1f}`
+*Your Statistics:*
+• URLs Shortened: `{stats['total_urls']}`
+• Total Clicks: `{stats['total_clicks']}`
+• Avg. Performance: `{stats['total_clicks']/max(stats['total_urls'], 1):.1f}` clicks/URL
 
-🛠️ *Service Usage:*
+*Service Distribution:*
 """
         for service in service_stats:
-            stats_text += f"• {service['_id'].title()}: `{service['count']}` URLs\n"
+            stats_text += f"• {service['_id'].title()}: `{service['count']}`\n"
         
         if professional_shortener.service_stats:
-            stats_text += f"\n🌐 *Global Service Reliability:*\n"
+            stats_text += f"\n*Global Service Stats:*\n"
             for service, count in professional_shortener.service_stats.items():
-                stats_text += f"• {service.title()}: `{count}` successful\n"
-        
-        stats_text += f"\n💡 *Bot Performance:*\n"
-        stats_text += f"• Successful Shortenings: `{professional_shortener.services_used}`\n"
-        stats_text += f"• Failed Services: `{len(professional_shortener.failed_services)}`\n"
+                stats_text += f"• {service.title()}: `{count}`\n"
         
         if stats['total_urls'] > 0:
             most_clicked = max(stats['urls'], key=lambda x: x.get('click_count', 0))
-            stats_text += f"• Most Popular URL: `{most_clicked.get('click_count', 0)}` clicks\n"
-        
-        stats_text += "\n*Use /mystats to see your individual URLs*"
+            stats_text += f"\n🔥 *Most Popular:* `{most_clicked.get('click_count', 0)}` clicks"
         
         bot.reply_to(message, stats_text, parse_mode='Markdown')
         
     except Exception as e:
         logger.error(f"Stats error: {e}")
-        bot.reply_to(message, "❌ *Error generating statistics*. Please try again later.", parse_mode='Markdown')
+        bot.reply_to(message, "❌ Error generating statistics.", parse_mode='Markdown')
 
 @bot.message_handler(commands=['mystats'])
 def show_my_stats(message):
@@ -360,43 +706,30 @@ def show_my_stats(message):
     user_id = message.from_user.id
     
     try:
-        user_urls = db_manager.get_user_urls(user_id, limit=15)
+        user_urls = db_manager.get_user_urls(user_id, limit=10)
         
         if not user_urls:
-            bot.reply_to(message, """
-📭 *No URLs Found*
-
-You haven't shortened any URLs yet! Send me a URL to get started and track your analytics.
-            """, parse_mode='Markdown')
+            bot.reply_to(message, "📭 You haven't shortened any URLs yet!", parse_mode='Markdown')
             return
         
-        stats_text = "📋 *YOUR SHORTENED URLS*\n\n"
+        stats_text = "📋 **YOUR RECENT URLS**\n\n"
         
         for i, url in enumerate(user_urls, 1):
             click_count = url.get('click_count', 0)
             created_date = url['created_at'].strftime('%m/%d/%Y')
             service = url.get('service_used', 'unknown')
             
-            stats_text += f"`{i:2d}.` 🔗 `{url['short_url']}`\n"
-            stats_text += f"     👆 **Clicks**: `{click_count}`"
-            stats_text += f" | 📅 `{created_date}`"
-            stats_text += f" | 🛠️ `{service}`\n\n"
+            stats_text += f"`{i:2d}.` `{url['short_url']}`\n"
+            stats_text += f"     👆 `{click_count}` clicks | 📅 `{created_date}`\n\n"
         
         total_stats = db_manager.get_user_stats(user_id)
-        stats_text += f"*Showing {len(user_urls)} of {total_stats['total_urls']} total URLs*\n"
-        stats_text += "*Use /backup to download your complete history*"
+        stats_text += f"*Showing {len(user_urls)} of {total_stats['total_urls']} total URLs*"
         
-        if len(stats_text) > 4096:
-            # Split long messages
-            parts = [stats_text[i:i+4096] for i in range(0, len(stats_text), 4096)]
-            for part in parts:
-                bot.reply_to(message, part, parse_mode='Markdown')
-        else:
-            bot.reply_to(message, stats_text, parse_mode='Markdown')
+        bot.reply_to(message, stats_text, parse_mode='Markdown')
             
     except Exception as e:
         logger.error(f"MyStats error: {e}")
-        bot.reply_to(message, "❌ *Error retrieving your URLs*. Please try again later.", parse_mode='Markdown')
+        bot.reply_to(message, "❌ Error retrieving your URLs.", parse_mode='Markdown')
 
 @bot.message_handler(commands=['backup'])
 def handle_backup(message):
@@ -406,122 +739,78 @@ def handle_backup(message):
     try:
         bot.send_chat_action(message.chat.id, 'upload_document')
         
-        processing_msg = bot.reply_to(message, "🔄 *Creating your backup...*", parse_mode='Markdown')
+        processing_msg = bot.reply_to(message, "🔄 Creating your backup...", parse_mode='Markdown')
         
         zip_buffer = backup_manager.create_backup(user_id)
         
         if zip_buffer:
-            # Get user stats for backup info
             stats = db_manager.get_user_stats(user_id)
             
             bot.send_document(
                 message.chat.id,
                 zip_buffer,
-                caption=f"""
-📦 *BACKUP CREATED SUCCESSFULLY*
-
-✅ **Summary:**
-• URLs: `{stats['total_urls']}`
-• Clicks: `{stats['total_clicks']}`
-• Date: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}`
-
-💾 *How to Restore:*
-Use /upload command and reply to this backup file
-
-🔒 *Your data is securely backed up and ready for restore.*
-                """,
-                visible_file_name=f"url_backup_{user_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M')}.zip",
+                caption=f"📦 **BACKUP CREATED**\n\n• URLs: `{stats['total_urls']}`\n• Clicks: `{stats['total_clicks']}`\n• Date: `{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}`",
+                visible_file_name=f"url_backup_{user_id}.zip",
                 parse_mode='Markdown'
             )
             bot.delete_message(message.chat.id, processing_msg.message_id)
         else:
             bot.edit_message_text(
-                "❌ *Backup Failed*\n\nPlease try again later or contact support if the issue persists.",
+                "❌ Backup failed. Please try again.",
                 message.chat.id,
                 processing_msg.message_id,
                 parse_mode='Markdown'
             )
     except Exception as e:
         logger.error(f"Backup failed: {e}")
-        bot.reply_to(message, "❌ *Backup creation failed*. Please try again later.", parse_mode='Markdown')
+        bot.reply_to(message, "❌ Backup creation failed.", parse_mode='Markdown')
 
 @bot.message_handler(commands=['upload'])
 def handle_upload(message):
     """Handle backup upload instructions"""
-    if message.reply_to_message and message.reply_to_message.document:
-        # This will be handled by the document handler
-        return
-    
     instructions = """
-📤 *BACKUP RESTORATION INSTRUCTIONS*
+📤 **BACKUP RESTORATION**
 
-**Step 1:** First, use `/backup` to download your current data (recommended)
+*How to restore:*
+1. Use `/backup` to download current data
+2. Reply to a backup file with `/upload`
+3. Wait for confirmation
 
-**Step 2:** Reply to a backup file with `/upload` command
-
-**Step 3:** I'll restore all your URLs and analytics data
-
-⚠️ **Important Notes:**
-• Existing URLs with same short links will be updated
-• Restoration may take a few moments
-• Keep your backup files secure
-
-*To proceed, reply to a backup file with /upload*
+⚠️ *Note:* Existing URLs will be updated.
     """
     bot.reply_to(message, instructions, parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: True, content_types=['document'])
 def handle_document(message):
     """Handle backup file upload for restoration"""
-    if message.reply_to_message and any(cmd in message.reply_to_message.text for cmd in ['/upload', 'BACKUP RESTORATION']):
+    if message.reply_to_message and any(cmd in message.reply_to_message.text for cmd in ['/upload', 'BACKUP']):
         try:
             user_id = message.from_user.id
             
-            processing_msg = bot.reply_to(message, "🔄 *Processing your backup file...*", parse_mode='Markdown')
+            processing_msg = bot.reply_to(message, "🔄 Processing backup...", parse_mode='Markdown')
             
             file_info = bot.get_file(message.document.file_id)
             downloaded_file = bot.download_file(file_info.file_path)
             
             if backup_manager.restore_backup(user_id, downloaded_file):
-                # Get updated stats
                 stats = db_manager.get_user_stats(user_id)
                 
                 bot.edit_message_text(
-                    f"""
-✅ *BACKUP RESTORED SUCCESSFULLY*
-
-🎉 Your data has been completely restored!
-
-📊 **Current Stats:**
-• URLs: `{stats['total_urls']}`
-• Total Clicks: `{stats['total_clicks']}`
-
-✨ All your shortened URLs and analytics are now available.
-Use /mystats to view your restored URLs.
-                    """,
+                    f"✅ **BACKUP RESTORED**\n\n• URLs: `{stats['total_urls']}`\n• Clicks: `{stats['total_clicks']}`",
                     message.chat.id,
                     processing_msg.message_id,
                     parse_mode='Markdown'
                 )
             else:
                 bot.edit_message_text(
-                    """
-❌ *RESTORATION FAILED*
-
-Possible reasons:
-• Invalid backup file format
-• File corruption
-• Database connection issue
-
-Please ensure you're uploading a valid backup file from this bot.
-                    """,
+                    "❌ Restoration failed. Invalid backup file.",
                     message.chat.id,
                     processing_msg.message_id,
                     parse_mode='Markdown'
                 )
         except Exception as e:
             logger.error(f"Upload failed: {e}")
-            bot.reply_to(message, "❌ *Restoration failed*. Please check the file and try again.", parse_mode='Markdown')
+            bot.reply_to(message, "❌ Restoration failed.", parse_mode='Markdown')
 
 @bot.message_handler(func=lambda message: True)
 def handle_all_messages(message):
@@ -531,23 +820,13 @@ def handle_all_messages(message):
     if user_message.startswith('/'):
         return
 
-    # Validate and prepare URL
     if not user_message.startswith(('http://', 'https://')):
         user_message = 'https://' + user_message
 
     if not validators.url(user_message):
         bot.reply_to(
             message,
-            """
-❌ *INVALID URL FORMAT*
-
-Please send a valid URL starting with:
-• `http://` or `https://`
-
-*Examples:*
-`https://www.example.com/very-long-path`
-`http://yourwebsite.com/document`
-            """,
+            "❌ Invalid URL format. Please include http:// or https://",
             parse_mode='Markdown'
         )
         return
@@ -555,107 +834,44 @@ Please send a valid URL starting with:
     try:
         bot.send_chat_action(message.chat.id, 'typing')
         
-        processing_msg = bot.reply_to(message, "🔄 *Processing your URL...*", parse_mode='Markdown')
+        user_name = f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
+        url_data = professional_shortener.shorten_with_all_services(user_message, message.from_user.id, user_name)
 
-        # Shorten the URL
-        url_data = professional_shortener.shorten_with_all_services(user_message, message.from_user.id)
-
-        # Create success response
         original_display = user_message[:80] + ('...' if len(user_message) > 80 else '')
         
         result_text = f"""
-✅ *URL SHORTENED SUCCESSFULLY*
+✅ **URL SHORTENED**
 
-🌐 **Original URL:**
-`{original_display}`
+🌐 *Original:* `{original_display}`
+🚀 *Shortened:* `{url_data['short_url']}`
+📊 *Analytics:* `0` clicks (new)
+🛠️ *Service:* `{url_data.get('service_used', 'Unknown')}`
 
-🚀 **Shortened URL:**
-`{url_data['short_url']}`
-
-📊 **Analytics Enabled:**
-• Clicks: `0` (new)
-• Service: `{url_data.get('service_used', 'Unknown')}`
-• Time: `{datetime.utcnow().strftime('%H:%M:%S UTC')}`
-
-💡 **Quick Actions:**
-• /mystats - View your URLs
-• /stats - See analytics
-• /backup - Download data
+💡 *Use /mystats to track clicks*
         """
         
-        bot.delete_message(message.chat.id, processing_msg.message_id)
         bot.reply_to(message, result_text, parse_mode='Markdown')
 
     except Exception as e:
         logger.error(f"Shortening failed: {e}")
-        error_text = f"""
-❌ *SHORTENING FAILED*
-
-All services are currently unavailable.
-
-**Troubleshooting:**
-• Check your URL format
-• Try again in 1-2 minutes
-• Use a different URL
-
-*Error Details:* `{str(e)}`
-        """
-        bot.reply_to(message, error_text, parse_mode='Markdown')
-
-# Click tracking simulation (for demonstration)
-def simulate_click(short_url: str, user_agent: str = "Telegram Bot"):
-    """Simulate click tracking for demo purposes"""
-    try:
-        if not urls_collection:
-            return None
-            
-        url_data = urls_collection.find_one({'short_url': short_url})
-        if url_data:
-            # Update click count
-            urls_collection.update_one(
-                {'_id': url_data['_id']},
-                {
-                    '$inc': {'click_count': 1},
-                    '$set': {'last_clicked': datetime.utcnow()}
-                }
-            )
-            
-            # Log click
-            if clicks_collection:
-                click_data = {
-                    'url_id': url_data['_id'],
-                    'short_url': short_url,
-                    'user_id': url_data['user_id'],
-                    'user_agent': user_agent,
-                    'clicked_at': datetime.utcnow(),
-                    'ip_address': 'simulated'
-                }
-                clicks_collection.insert_one(click_data)
-            
-            return url_data['original_url']
-    except Exception as e:
-        logger.error(f"Click simulation failed: {e}")
-    return None
+        bot.reply_to(message, "❌ All services are currently unavailable. Please try again.", parse_mode='Markdown')
 
 # Start the bot
 if __name__ == '__main__':
     print("""
-🚀 PROFESSIONAL URL SHORTENER BOT STARTING...
+🚀 PROFESSIONAL URL SHORTENER BOT WITH INLINE KEYBOARD
     
-📊 Features Enabled:
-✅ Multi-service URL shortening
-✅ MongoDB analytics & tracking
-✅ Backup/restore system
+🎬 Features:
+✅ Video introduction
+✅ Inline keyboard navigation
 ✅ Professional UI/UX
-✅ Error handling & logging
+✅ MongoDB analytics
+✅ Backup/restore system
 
-🎬 Intro Video: https://files.catbox.moe/nunx43.mp4
-💾 Database: MongoDB Connected
-🤖 Bot: Ready to receive messages
+🎯 Ready to receive messages!
     """)
     
     try:
         bot.polling(none_stop=True, timeout=60)
     except Exception as e:
         print(f"❌ Bot stopped: {e}")
-        logger.error(f"Bot crashed: {e}")
